@@ -1,4 +1,5 @@
 import string
+import math
 from pymongo import MongoClient
 
 class Storage:
@@ -20,7 +21,10 @@ class Storage:
     # FUNCTION: get_term_frequencies
     # SPECIFICATION: receives a text and returns the frequency of each term
     #-------------------------------------------------------------------------
-    def __get_term_frequencies(self, text):
+    def get_term_frequencies(self, text):
+        # TODO: Text normalization (lowercase and punctuation removal) may be removed
+        # since text transformation would occur upstream
+
         # Converting text to lowercase
         lowercase_text = text.lower()
 
@@ -68,39 +72,24 @@ class Storage:
             )
 
     #-------------------------------------------------------------------------
-    # FUNCTION: remove_posting
-    # SPECIFICATION: removes a document posting from a term and deletes the
-    #                term if its postings list becomes empty
-    #-------------------------------------------------------------------------
-    def __remove_posting(self, term, docId):
-        # Removing the posting from the term
-        self.inverted_index.update_one(
-            { "term": term },
-            { "$pull": { "postings": { "docId": docId } }}
-        )
-
-        # Retrieving the term after removing the posting
-        term_document = self.inverted_index.find_one({ "term": term })
-
-        # Deleting the term if its postings list is empty
-        if len(term_document["postings"]) == 0:
-            self.inverted_index.delete_one({ "_id": term_document["_id"] })
-
-    #-------------------------------------------------------------------------
     # FUNCTION: insert_document
     # SPECIFICATION: inserts a document and updates the inverted index
     #-------------------------------------------------------------------------
     def __insert_document(self, document):
-        # Inserting the document into the documents collection
-        self.documents.insert_one(document)
-        docId = document["_id"]
-
         # TODO: We need to apply text transformation before adding it to the index
         # I will likely need a helper method from Josiah here where I pass the html
         transformed_text = document["html"]
 
+        # Overwrite 
+        document["content"] = document["html"]
+        document.pop("html", None)
+
+        # Inserting the document into the documents collection
+        self.documents.insert_one(document)
+        docId = document["_id"]
+
         # Obtaining the term frequencies
-        term_frequencies = list(self.__get_term_frequencies(transformed_text).items())
+        term_frequencies = list(self.get_term_frequencies(transformed_text).items())
 
         # Updating the inverted index
         for term_and_frequency in term_frequencies:
@@ -109,32 +98,10 @@ class Storage:
             self.__add_posting(term, docId, frequency)
 
     #-------------------------------------------------------------------------
-    # FUNCTION: delete_document
-    # SPECIFICATION: deletes a document and removes all of its postings from
-    #                the inverted index
+    # FUNCTION: store_page
+    # SPECIFICATION: adds and indexes a faculty page document using internal Storage
+    # methods. meant to be used within the Crawler
     #-------------------------------------------------------------------------
-    def __delete_document(self, docId):
-        # Retrieving the document before deleting it
-        document = self.documents.find_one({ "_id": docId })
-
-        # TODO: Same as add_document, we need to apply text transformation, 
-        # so we know what in the inverted index needs to be taken away
-        transformed_text = document["html"]
-
-        # Obtaining the terms contained in the document
-        term_frequencies = list(self.__get_term_frequencies(transformed_text).items())
-        terms = term_frequencies.keys()
-
-        # Removing the document from every corresponding posting list
-        for term in terms:
-            self.inverted_index.update_one(
-                { "term": term }, 
-                { "$pull": { "postings": { "docId": docId } } 
-            })
-
-        # Deleting the document
-        self.documents.delete_one({ "_id": docId })
-
     def store_page(self, url, facultyName, html):
         document = {
             "url": url,
@@ -143,5 +110,44 @@ class Storage:
         }
         self.__insert_document(document)
 
+    def get_documents(self):
+        return list(self.documents.find({}))
+
+    def get_document(self, doc_id):
+        return self.documents.find_one({ "_id": doc_id })
+
+    def get_term_in_index(self, term):
+        return self.inverted_index.find_one({ "term": term })
+
+    #-------------------------------------------------------------------------
+    # FUNCTION: apply_norms
+    # SPECIFICATION: calculates the magnitude of a document based on all its terms
+    # This is intended to be used for calculating the cosine similarity to normalize
+    # the vector. This function must be called after crawling is completed
+    #-------------------------------------------------------------------------
+    def calculate_doc_norms(self):
+        # Precompute idf for every term once (avoids a DB lookup per term per document)
+        N = self.documents.count_documents({})
+        idf = {}
+        for entry in self.inverted_index.find({}):
+            idf[entry["term"]] = math.log(N / len(entry["postings"]))
+
+        documents = self.documents.find({})
+        for document in documents:
+            # TODO: Transform
+            transformed_text = document["content"]
+            term_frequencies = self.get_term_frequencies(transformed_text)
+
+            norm = 0
+            for term, frequency in term_frequencies.items():
+                norm += ((1 + math.log(frequency)) * idf[term]) ** 2
+
+            norm = math.sqrt(norm)
+            self.documents.update_one({ "_id": document["_id"] }, { "$set": { "norm": norm }})
+
 storage = Storage(restart=True)
-storage.store_page("some_url", "Bobby Bad", "This is a text document")
+storage.store_page("example_url", "John Doe", "John Doe loves beyblade")
+storage.store_page("example_url", "Jane Doe", "Jane Doe loves pokemon cards")
+storage.calculate_doc_norms()
+
+print(storage.get_documents())
