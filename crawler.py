@@ -74,9 +74,3 @@ def extractLinks(html, base):
         if link.startswith("http"):
             links.append(link)
     return links
-
-# test
-seed = "https://www.cpp.edu/engineering/ce/index.shtml"
-pages = crawler(seed, 13)
-for page in pages:
-    print(page.url + '\t' + page.facultyName)
