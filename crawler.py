@@ -23,7 +23,6 @@ def crawler(seed, num_targets):
     pages = []
     while frontier:
         url = frontier.pop(0)
-        print(url)
         html = fetchHtml(url)
         if target_page(html):
             facultyName = extractFacultyName(html)
@@ -34,7 +33,7 @@ def crawler(seed, num_targets):
         if targets_found == num_targets:
             frontier.clear()
         else:
-            links = extractLinks(html, base(url))
+            links = extractLinks(html, url)
             for link in links:
                 if link not in seen:
                     seen.add(link)
@@ -47,16 +46,15 @@ def crawler(seed, num_targets):
 # RETURNS: the html content of the page
 #-------------------------------------------------------------------------
 def fetchHtml(url):
-    return requests.get(url)
-
-#-------------------------------------------------------------------------
-# FUNCTION: base
-# SPECIFICATION: finds the base address of a url
-# RETURNS: the base address
-#-------------------------------------------------------------------------
-def base(url):
-    parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        print(url)
+    except requests.exceptions.Timeout:
+        print(f"{url} - REQUEST TIMED OUT")
+    except requests.exceptions.RequestException as e:
+        print(f"{url} - REQUEST FAILED: {e}")
+    return response
 
 #-------------------------------------------------------------------------
 # FUNCTION: target_page
@@ -97,19 +95,21 @@ def store_page(url, facultyName, html, pages):
 # SPECIFICATION: finds and resolves all links on a page
 # RETURNS: a list of links from the page
 #-------------------------------------------------------------------------
-def extractLinks(html, base):
+def extractLinks(html, start_url):
     soup = BeautifulSoup(html.text, 'html.parser')
     a_tags = soup.find_all('a', href=True)
     links = []
     for tag in a_tags:
-        link = tag.get('href')
+        link = tag.get('href').strip()
         # skip over '#' links and empty hrefs
-        if not link or '#' in link:
+        if not link or link.startswith('#'):
             continue
+        # fix links with a single starting slash (https:/www...)
+        link = re.sub(r"^(https?):/(?!/)", r"\1://", link)
         # check if link is relative
         if bool(re.match(r'^(?![a-zA-Z][a-zA-Z0-9+.-]*:|//)', link)):
             # prepend the base url to the relative link
-            link = urljoin(base, link)
+            link = urljoin(start_url, link)
         # filter out links that are not http (excludes links like "mailto:broncofamily@cpp.edu")
         if link.startswith("http"):
             links.append(link)
